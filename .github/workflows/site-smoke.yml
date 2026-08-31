@@ -1,0 +1,119 @@
+name: Production smoke test
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+
+    steps:
+      - name: Wait for the matching Netlify production deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="https://luxedetailingco.netlify.app"
+          READY=0
+          for i in $(seq 1 24); do
+            if curl -fsSL --max-time 20 "$BASE/" | grep -q 'review-fix.js?v=20260831-final1'; then
+              READY=1
+              break
+            fi
+            echo "Waiting for Netlify production deploy ($i/24)..."
+            sleep 10
+          done
+          if [ "$READY" != "1" ]; then
+            echo "Production never reached the expected version."
+            exit 1
+          fi
+
+      - name: Verify public site and review storage
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="https://luxedetailingco.netlify.app"
+
+          curl -fsSL --max-time 20 "$BASE/" -o homepage.html
+          grep -q 'review-fix.js?v=20260831-final1' homepage.html
+
+          curl -fsSL --max-time 20 "$BASE/review-fix.js?v=20260831-final1" -o review-fix.js
+          grep -q 'approvedReviews' review-fix.js
+          grep -q 'Text My Quote' review-fix.js
+          grep -q 'quoteSmsFallback' review-fix.js
+
+          curl -fsSL --max-time 20 "$BASE/.netlify/functions/reviews" -o reviews-get.json
+          python3 - <<'PY'
+          import json
+          data=json.load(open('reviews-get.json'))
+          assert data.get('ok') is True, data
+          assert isinstance(data.get('reviews'), list), data
+          print('GET reviews OK:', len(data['reviews']), 'review(s)')
+          PY
+
+          curl -fsSL --max-time 20 -X POST \
+            -H 'Content-Type: application/json' \
+            --data '{"name":"Luxe Storage Test","vehicle":"QA","rating":5,"review":"storage smoke test","_smoke":"1"}' \
+            "$BASE/.netlify/functions/reviews" -o storage-smoke.json
+          python3 - <<'PY'
+          import json
+          data=json.load(open('storage-smoke.json'))
+          assert data.get('ok') is True, data
+          assert data.get('storage') is True, data
+          print('Netlify Blobs write/read/delete smoke test OK')
+          PY
+
+      - name: Verify reviews render in a real browser and SMS link is generated
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="https://luxedetailingco.netlify.app"
+          cleanup() {
+            curl -fsS --max-time 20 -X DELETE "$BASE/.netlify/functions/reviews?qa=1" >/dev/null || true
+          }
+          trap cleanup EXIT
+
+          curl -fsSL --max-time 20 -X POST \
+            -H 'Content-Type: application/json' \
+            --data '{"name":"__LUXE_QA__","vehicle":"Browser QA","rating":5,"review":"LUXE_QA_VISIBLE_TEST"}' \
+            "$BASE/.netlify/functions/reviews" -o qa-review.json
+          python3 - <<'PY'
+          import json
+          data=json.load(open('qa-review.json'))
+          assert data.get('ok') is True, data
+          assert data.get('review',{}).get('review') == 'LUXE_QA_VISIBLE_TEST', data
+          print('QA review saved')
+          PY
+
+          CHROME="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium || true)"
+          if [ -z "$CHROME" ]; then
+            echo "Chrome is not available on this runner."
+            exit 1
+          fi
+          "$CHROME" --headless=new --no-sandbox --disable-gpu \
+            --virtual-time-budget=12000 --dump-dom "$BASE/" > browser-dom.html 2>browser.log
+
+          grep -q 'LUXE_QA_VISIBLE_TEST' browser-dom.html
+          grep -q 'id="reviewSubmit"' browser-dom.html
+          grep -q 'Text My Quote' browser-dom.html
+          grep -q 'sms:+19258722494' browser-dom.html
+          grep -q 'body=' browser-dom.html
+          echo "Desktop browser render + quote link OK"
+
+          IG_UA='Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Instagram 350.0.0.0.0'
+          "$CHROME" --headless=new --no-sandbox --disable-gpu \
+            --user-agent="$IG_UA" --virtual-time-budget=12000 --dump-dom "$BASE/" > instagram-dom.html 2>instagram-browser.log
+
+          grep -q 'Text My Quote' instagram-dom.html
+          grep -q 'sms:+19258722494' instagram-dom.html
+          grep -q 'body=' instagram-dom.html
+          grep -q 'Open Messages' instagram-dom.html
+          echo "Instagram-style iPhone browser SMS markup + fallback OK"
+
+          cleanup
+          trap - EXIT
