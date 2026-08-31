@@ -1,0 +1,59 @@
+name: Live production diagnostic
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Inspect current live site without changing data
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="https://luxedetailingco.netlify.app"
+          echo "=== SITE HEADERS ==="
+          curl -sSIL --max-time 20 "$BASE/" | head -30
+
+          echo "=== INJECTED SCRIPT ==="
+          curl -fsSL --max-time 20 "$BASE/" -o homepage.html
+          grep -oE 'review-fix\.js[^"<]*' homepage.html || true
+
+          echo "=== REVIEWS ENDPOINT ==="
+          curl -fsSL --max-time 20 "$BASE/.netlify/functions/reviews" -o reviews.json
+          cat reviews.json
+          echo
+
+          CHROME="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium || true)"
+          if [ -z "$CHROME" ]; then
+            echo "No Chrome available"
+            exit 1
+          fi
+
+          "$CHROME" --headless=new --no-sandbox --disable-gpu --virtual-time-budget=10000 --dump-dom "$BASE/" > dom.html 2>chrome.log
+          echo "=== DOM REVIEW CHECK ==="
+          python3 - <<'PY'
+          import json, re
+          from pathlib import Path
+          data=json.load(open('reviews.json'))
+          dom=Path('dom.html').read_text(errors='ignore')
+          reviews=data.get('reviews') or []
+          print('reviews_count=',len(reviews))
+          print('has_review_submit=', 'id="reviewSubmit"' in dom)
+          print('has_sms_link=', 'sms:+19258722494' in dom)
+          print('has_approvedReviews=', 'id="approvedReviews"' in dom)
+          print('has_publishedReviews=', 'id="publishedReviews"' in dom)
+          if reviews:
+              text=str(reviews[0].get('review',''))
+              print('first_review=',repr(text))
+              print('first_review_visible_in_dom=', text in dom)
+          match=re.search(r'<div[^>]+id="approvedReviews"[^>]*>(.*?)</div>\s*<div[^>]+id="publishedReviews"',dom,re.S)
+          if match:
+              snippet=re.sub(r'\s+',' ',match.group(1))[:1000]
+              print('approvedReviews_html=',snippet)
+          PY
