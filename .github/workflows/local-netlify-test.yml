@@ -1,0 +1,53 @@
+name: Local Netlify integration test
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install dependencies
+        run: npm install
+      - name: Start Netlify dev
+        run: |
+          npx netlify-cli dev --offline --port 8888 > /tmp/netlify.log 2>&1 &
+          echo $! > /tmp/netlify.pid
+          for i in {1..60}; do
+            if curl -fsS http://127.0.0.1:8888/ >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8888/ >/dev/null
+      - name: Verify review API GET and POST
+        run: |
+          set -euo pipefail
+          BASE=http://127.0.0.1:8888
+          curl -fsS "$BASE/.netlify/functions/reviews" | tee /tmp/reviews-before.json
+          curl -fsS -X POST "$BASE/.netlify/functions/reviews" \
+            -H 'content-type: application/json' \
+            --data '{"name":"__LUXE_QA__","vehicle":"CI Test","rating":5,"review":"integration smoke test","_smoke":"1"}' \
+            | tee /tmp/reviews-post.json
+          python3 - <<'PY'
+          import json
+          d=json.load(open('/tmp/reviews-post.json'))
+          assert d.get('ok') is True, d
+          assert d.get('storage') is True, d
+          PY
+      - name: Verify homepage wiring
+        run: |
+          set -euo pipefail
+          BASE=http://127.0.0.1:8888
+          curl -fsS "$BASE/" -o /tmp/home.html
+          grep -q 'review-fix.js' /tmp/home.html
+          curl -fsS "$BASE/review-fix.js" -o /tmp/review-fix.js
+          grep -q "REVIEW_ENDPOINT = '/.netlify/functions/reviews'" /tmp/review-fix.js
+          grep -q "sms:" /tmp/review-fix.js
+      - name: Dump Netlify log on failure
+        if: failure()
+        run: cat /tmp/netlify.log || true
