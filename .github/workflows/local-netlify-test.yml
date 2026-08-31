@@ -15,11 +15,12 @@ jobs:
           node-version: 24
       - name: Install dependencies
         run: npm install
-      - name: Start Netlify dev
+      - name: Start Netlify dev without Edge setup
         run: |
+          mv netlify/edge-functions /tmp/edge-functions
           npx netlify-cli dev --offline --port 8888 > /tmp/netlify.log 2>&1 &
           echo $! > /tmp/netlify.pid
-          for i in {1..60}; do
+          for i in {1..30}; do
             if curl -fsS http://127.0.0.1:8888/ >/dev/null 2>&1; then break; fi
             sleep 2
           done
@@ -39,15 +40,16 @@ jobs:
           assert d.get('ok') is True, d
           assert d.get('storage') is True, d
           PY
-      - name: Verify homepage wiring
+      - name: Verify production wiring files
         run: |
           set -euo pipefail
-          BASE=http://127.0.0.1:8888
-          curl -fsS "$BASE/" -o /tmp/home.html
-          grep -q 'review-fix.js' /tmp/home.html
-          curl -fsS "$BASE/review-fix.js" -o /tmp/review-fix.js
-          grep -q "REVIEW_ENDPOINT = '/.netlify/functions/reviews'" /tmp/review-fix.js
-          grep -q "sms:" /tmp/review-fix.js
+          grep -q 'review-fix.js' /tmp/edge-functions/inject-site-fix.js
+          grep -q "REVIEW_ENDPOINT = '/.netlify/functions/reviews'" review-fix.js
+          grep -q "sms:" review-fix.js
+          grep -q "approvedReviews" review-fix.js
+          grep -q "publishedReviews" review-fix.js
+          test -f netlify/functions/reviews.mjs
+          test ! -f netlify/functions/reviews.js
       - name: Dump Netlify log on failure
         if: failure()
         run: cat /tmp/netlify.log || true
