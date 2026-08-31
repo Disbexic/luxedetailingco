@@ -13,21 +13,31 @@
     });
   }
 
-  function renderReviews(items){
-    var box = document.getElementById('publishedReviews');
-    if(!box) return;
-    if(!items || !items.length){
-      box.innerHTML = '<p class="review-empty">Customer reviews will appear here.</p>';
-      return;
-    }
-    box.innerHTML = items.map(function(r){
+  function reviewMarkup(items){
+    return items.map(function(r){
       var rating = Math.max(1,Math.min(5,Number(r.rating||5)));
-      return '<article class="published-review">'+
+      return '<article class="testimonial published-review">'+
         '<div class="stars">'+'★'.repeat(rating)+'☆'.repeat(5-rating)+'</div>'+
-        '<p>'+esc(r.review)+'</p>'+
-        '<small>'+esc(r.name)+' · '+esc(r.vehicle)+'</small>'+
+        '<p class="quote">'+esc(r.review)+'</p>'+
+        '<p class="attribution">'+esc(r.name)+' · '+esc(r.vehicle)+'</p>'+
       '</article>';
     }).join('');
+  }
+
+  function renderReviews(items){
+    var approved = document.getElementById('approvedReviews');
+    var published = document.getElementById('publishedReviews');
+
+    if(!items || !items.length){
+      if(approved){
+        approved.innerHTML = '<div class="testimonial" id="noReviewsMessage"><p class="quote">Be the first to leave a review.</p><p class="attribution">Luxe Mobile Auto Detailing</p></div>';
+      }
+      if(published) published.innerHTML = '';
+      return;
+    }
+
+    if(approved) approved.innerHTML = reviewMarkup(items);
+    if(published) published.innerHTML = '';
   }
 
   async function loadReviews(){
@@ -37,13 +47,28 @@
       var d = await r.json();
       renderReviews(d.reviews || []);
     }catch(e){
-      renderReviews([]);
+      console.error('Review load failed', e);
     }
   }
 
   function smsHref(message){
     var isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent||'');
     return 'sms:'+LUXE_NUMBER+(isIOS?'&':'?')+'body='+encodeURIComponent(message);
+  }
+
+  function quoteMessage(form){
+    var data = new FormData(form);
+    return [
+      'LUXE QUOTE REQUEST','',
+      'Name: '+(data.get('name')||''),
+      'Phone: '+(data.get('phone')||''),
+      'Email: '+(data.get('email')||''),
+      'Vehicle: '+(data.get('vehicle-type')||''),
+      'Service: '+(data.get('service')||''),
+      'Condition: '+(data.get('condition')||''),
+      'City / ZIP: '+(data.get('location')||''),
+      'Preferred Date: '+(data.get('date')||'')
+    ].join('\n');
   }
 
   function repairReviewForm(){
@@ -102,29 +127,30 @@
     var oldBtn = form.querySelector('button[type="submit"], #bookingSubmit');
     if(!oldBtn) return;
 
-    var btn = oldBtn.cloneNode(true);
-    btn.type = 'button';
-    btn.id = 'bookingSubmit';
-    btn.textContent = 'Text My Quote';
-    oldBtn.replaceWith(btn);
+    var link = document.createElement('a');
+    link.id = 'bookingSubmit';
+    link.className = oldBtn.className || 'btn';
+    link.textContent = 'Text My Quote';
+    link.setAttribute('role','button');
+    link.href = 'sms:'+LUXE_NUMBER;
+    oldBtn.replaceWith(link);
 
-    btn.addEventListener('click', function(){
-      if(!form.reportValidity()) return;
-      var data = new FormData(form);
-      var message = [
-        'LUXE QUOTE REQUEST','',
-        'Name: '+(data.get('name')||''),
-        'Phone: '+(data.get('phone')||''),
-        'Email: '+(data.get('email')||''),
-        'Vehicle: '+(data.get('vehicle-type')||''),
-        'Service: '+(data.get('service')||''),
-        'Condition: '+(data.get('condition')||''),
-        'City / ZIP: '+(data.get('location')||''),
-        'Preferred Date: '+(data.get('date')||'')
-      ].join('\n');
+    function refreshHref(){
+      link.href = smsHref(quoteMessage(form));
+    }
+
+    form.addEventListener('input', refreshHref);
+    form.addEventListener('change', refreshHref);
+    refreshHref();
+
+    link.addEventListener('click', function(e){
+      if(!form.reportValidity()){
+        e.preventDefault();
+        return;
+      }
+      refreshHref();
       var status = document.getElementById('bookingStatus');
       if(status) status.textContent = 'Opening Messages. Tap Send to send your quote to Luxe.';
-      window.location.href = smsHref(message);
     });
   }
 
