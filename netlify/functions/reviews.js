@@ -1,88 +1,70 @@
-const { getStore } = require('@netlify/blobs');
+import { getDeployStore, getStore } from "@netlify/blobs";
 
-const STORE_NAME = 'luxe-reviews';
-const KEY = 'reviews.json';
+const STORE_NAME = "luxe-reviews";
+const KEY = "reviews.json";
 
-exports.handler = async (event) => {
+function reviewsStore() {
+  const isProduction = globalThis.Netlify?.context?.deploy?.context === "production";
+
+  if (isProduction) {
+    return getStore(STORE_NAME, { consistency: "strong" });
+  }
+
+  return getDeployStore(STORE_NAME);
+}
+
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store"
+    }
+  });
+}
+
+export default async (request) => {
   try {
-    const store = getStore(STORE_NAME);
+    const store = reviewsStore();
 
-    if (event.httpMethod === 'GET') {
-      const reviews = (await store.get(KEY, { type: 'json' })) || [];
-
-      return {
-        statusCode: 200,
-        headers: {
-          'Content-Type': 'application/json',
-          'Cache-Control': 'no-store'
-        },
-        body: JSON.stringify({ reviews })
-      };
+    if (request.method === "GET") {
+      const reviews = (await store.get(KEY, { type: "json" })) || [];
+      return json({ reviews });
     }
 
-    if (event.httpMethod === 'POST') {
-      const data = JSON.parse(event.body || '{}');
-
-      const name = String(data.name || '').trim().slice(0, 80);
-      const vehicle = String(data.vehicle || '').trim().slice(0, 100);
-      const review = String(data.review || '').trim().slice(0, 1200);
-      const rating = Math.max(
-        1,
-        Math.min(5, Number(data.rating || 5))
-      );
-
-      if (!name || !vehicle || !review) {
-        return {
-          statusCode: 400,
-          body: JSON.stringify({
-            error: 'Missing review fields.'
-          })
-        };
-      }
-
-      const reviews =
-        (await store.get(KEY, { type: 'json' })) || [];
-
-      const entry = {
-        id: Date.now().toString(36),
-        name,
-        vehicle,
-        rating,
-        review,
-        createdAt: new Date().toISOString()
-      };
-
-      reviews.unshift(entry);
-
-      await store.setJSON(
-        KEY,
-        reviews.slice(0, 100)
-      );
-
-      return {
-        statusCode: 200,
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          ok: true,
-          review: entry
-        })
-      };
+    if (request.method !== "POST") {
+      return json({ error: "Method not allowed" }, 405);
     }
 
-    return {
-      statusCode: 405,
-      body: JSON.stringify({
-        error: 'Method not allowed'
-      })
+    const data = await request.json();
+    const name = String(data.name || "").trim().slice(0, 80);
+    const vehicle = String(data.vehicle || "").trim().slice(0, 100);
+    const review = String(data.review || "").trim().slice(0, 1200);
+    const ratingNumber = Number(data.rating);
+    const rating = Number.isFinite(ratingNumber)
+      ? Math.max(1, Math.min(5, Math.round(ratingNumber)))
+      : 5;
+
+    if (!name || !vehicle || !review) {
+      return json({ error: "Please complete your name, vehicle, and review." }, 400);
+    }
+
+    const reviews = (await store.get(KEY, { type: "json" })) || [];
+
+    const entry = {
+      id: crypto.randomUUID(),
+      name,
+      vehicle,
+      rating,
+      review,
+      createdAt: new Date().toISOString()
     };
+
+    await store.setJSON(KEY, [entry, ...reviews].slice(0, 100));
+
+    return json({ ok: true, review: entry }, 201);
   } catch (error) {
-    return {
-      statusCode: 500,
-      body: JSON.stringify({
-        error: 'Review service unavailable.'
-      })
-    };
+    console.error("reviews function failed", error);
+    return json({ error: "Review service unavailable. Please try again." }, 500);
   }
 };
